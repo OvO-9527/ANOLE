@@ -8,22 +8,24 @@ import warnings
 import numpy as np
 from typing import List
 import multiprocessing as mp
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../simulator')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../src')))
 
 from replay_memory import ReplayMemory
 import tensorflow as tf
 import shutil
-from simulator.save_cmd import set_seed, save_args
+from common.utils import set_seed, save_args
 import subprocess
 from simulator.master_QoE_4G.schedulers import (
     UDRTrainScheduler,
 )
-from simulator.abr_trace import AbrTrace
-from simulator.schedulers import TestScheduler
-from simulator.utils2 import load_traces,load_trace, QoE_1,QoE_2,QoE_3,QoE_4,QoE_5
-from simulator.env import Environment
-from simulator.ANOLE import A_NN
-from simulator.constants import (
+from simulator.master_QoE_4G.abr_trace import AbrTrace
+from simulator.master_QoE_4G.base_abr import BaseAbr
+from simulator.master_QoE_4G.schedulers import TestScheduler
+from simulator.master_QoE_4G.utils import load_traces,load_trace, QoE_1,QoE_2,QoE_3,QoE_4,QoE_5
+from simulator.master_QoE_4G.env import Environment
+from simulator.master_QoE_4G.env_ZB import Environment as Env_zb
+from simulator.master_QoE_4G.ALONE_git2 import A_NN
+from simulator.master_QoE_4G.constants import (
     A_DIM,
     BUFFER_NORM_FACTOR,
     CRITIC_LR_RATE,
@@ -56,6 +58,8 @@ print("GPU:",physical_devices)
 for device in physical_devices:
 
     tf.config.experimental.set_memory_growth(device, True)
+
+
 
 
 def parse_args():
@@ -150,7 +154,11 @@ def test( actor: A_NN.ActorNetwork, trace: AbrTrace,
 
 
         # reward is video quality - rebuffer penalty - smoothness
+
+
         reward = QoE_1(bit_rate, last_bit_rate, rebuf)
+
+
 
         r_batch.append(reward)
 
@@ -165,6 +173,20 @@ def test( actor: A_NN.ActorNetwork, trace: AbrTrace,
         # dequeue history record
         state = np.roll(state, -1, axis=1)
         # this should be S_INFO number of terms
+        state[0, -1] = VIDEO_BIT_RATE[bit_rate] / float(
+            np.max(VIDEO_BIT_RATE)
+        )  # last quality
+        state[1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
+        state[2, -1] = (
+                float(video_chunk_size) / float(delay) / M_IN_K
+        )  # kilo byte / ms
+        state[3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
+        state[4, : A_DIM] = (np.array(next_video_chunk_sizes) / M_IN_K / M_IN_K
+                                   )  # mega byte
+        state[5, -1] = np.minimum(
+            video_chunk_remain, TOTAL_VIDEO_CHUNK,
+        ) / float(TOTAL_VIDEO_CHUNK)
+
         action_prob = actor.predict(np.reshape(state, (1, S_INFO, S_LEN)))
         action_cumsum = np.cumsum(action_prob)
 
@@ -173,7 +195,9 @@ def test( actor: A_NN.ActorNetwork, trace: AbrTrace,
                 > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)
         ).argmax()
 
+
         s_batch.append(state)
+
         entropy_record.append(A_NN.compute_entropy(action_prob[0]))
 
         if end_of_video:
@@ -198,6 +222,10 @@ def test( actor: A_NN.ActorNetwork, trace: AbrTrace,
     abr_log.close()
 
     return final_reward
+
+
+
+
 
 
 def train( trace_scheduler, val_traces: List[AbrTrace],
@@ -248,6 +276,7 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
              'rewards_median', 'rewards_95per', 'rewards_max'])
 
         epoch = 0
+
         actor = A_NN.ActorNetwork(sess,
                                  state_dim=[S_INFO, S_LEN],
                                  action_dim=A_DIM,
@@ -263,6 +292,8 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
                                    bitrate_dim=A_DIM,
                                    name='QoE1')
 
+
+        # 创建一个用于更新的旧actor网络
         model_actor_old = A_NN.ActorNetwork(sess,
                                                    state_dim=[S_INFO, S_LEN],
                                                    action_dim=A_DIM,
@@ -300,9 +331,11 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
         val_mean_rewards.append(val_mean_reward)
 
 
+        # 创建策略缓冲区和价值缓冲区
         po_buff = ReplayMemory(15 * TRAIN_SEQ_LEN)
 
 
+        #-----------------------此为正常训练步骤----------------------------------------------------
         while epoch < total_epoch:
 
             start_t = time.time()
@@ -315,11 +348,24 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
 
             # record average reward and td loss change
             # in the experiences from the agents
+
+
             model_actor_old.set_network_params(actor_net_params)
+
+
+            # 获取每个进程的轨迹s，a，r
+            for i in range(num_agents):
+                s_batch, a_batch, Adv_batch_1,R_batch_1 = exp_queues[i].get()
+                po_buff.push([s_batch, a_batch,  Adv_batch_1,R_batch_1])
+
+
 
             for i in range(num_agents):
                 s_batch, a_batch, Adv_batch_1,R_batch_1 = exp_queues[i].get()
                 po_buff.push([s_batch, a_batch,  Adv_batch_1,R_batch_1])
+
+
+
 
             for _ in range(2):
                 s_batch, a_batch,  Adv_batch_1,  R_batch_1 = po_buff.sample(SAMPLE_LEN * 9)
@@ -330,6 +376,8 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
 
 
 
+
+            # # 策略缓存区清零
             po_buff.clear()
             epoch += 1
             print(epoch)
@@ -360,16 +408,225 @@ def train( trace_scheduler, val_traces: List[AbrTrace],
         tmp_agent.terminate()
         tmp_agent.join()
 
+
+
+
+
+def agent(train_seq_len: int, s_info: int, s_len: int, a_dim: int,
+           agent_id: int, net_params_queue: mp.Queue,
+          exp_queue: mp.Queue, trace_scheduler, video_size_file_dir: str,
+          qoe_number: int, is_log: bool):
+    """Agent method for A2C/A3C training framework.
+
+    Args
+        train_seq_len: train batch size
+        net_params_queues: a queue for the transferring neural network
+                           parameters between central agent and agent.
+        exp_queues: a queue for the transferring experience/rollouts
+                    between central agent and agent.
+    """
+
+    if agent_id < 5:
+        gpu_id = 0
+    else:
+        gpu_id = 1
+    gpu_id = 0
+    physical_devices = tf.config.list_physical_devices('GPU')
+    if len(physical_devices) > 0:
+        tf.config.set_visible_devices(physical_devices[gpu_id], 'GPU')
+        tf.config.experimental.set_memory_growth(physical_devices[gpu_id], True)
+        print(f"Agent {agent_id}: Using GPU {gpu_id}")
+    else:
+        print(f"Agent {agent_id}: No GPU devices found.")
+
+
+
+
+    net_env = Environment(trace_scheduler, VIDEO_CHUNK_LEN / MILLISECONDS_IN_SECOND,
+                          video_size_file_dir=video_size_file_dir,random_seed=agent_id)
+
+
+
+    with tf.compat.v1.Session() as sess:
+
+        actor = A_NN.ActorNetwork(sess, state_dim=[s_info, s_len],
+                                 action_dim=a_dim, learning_rate = ACTOR_LR_RATE,bitrate_dim=A_DIM,entropy_weight=np.log(A_DIM),
+                                         name = 'actor')
+        # learning_rate=args.ACTOR_LR_RATE)
+        critic = A_NN.CriticNetwork(sess,
+                                                 state_dim=[s_info, s_len],
+                                                 learning_rate=CRITIC_LR_RATE,
+                                                 bitrate_dim=A_DIM,
+                                                 name='QoE')
+
+        # initial synchronization of the network parameters from the coordinator
+        actor_net_params, critic_net_params= net_params_queue.get()
+        actor.set_network_params(actor_net_params)
+        critic.set_network_params(critic_net_params)
+
+
+        last_bit_rate = DEFAULT_QUALITY
+        selection = 0
+        bit_rate = DEFAULT_QUALITY
+
+        # action_vec = np.array( [VIDEO_BIT_RATE[last_bit_rate] ,VIDEO_BIT_RATE[bit_rate] ,selection] )
+        action_vec = np.zeros(a_dim)
+
+        action_vec[bit_rate] = 1
+
+        s_batch = [np.zeros((s_info, s_len))]
+        a_batch = [action_vec]
+        r_batch = []
+
+
+        entropy_record = []
+
+
+        time_stamp = 0
+        epoch = 0
+        while True:  # experience video streaming forever
+
+            # the action is from the last decision
+            # this is to make the framework similar to the real
+
+
+            (
+                delay,
+                sleep_time,
+                buffer_size,
+                rebuf,
+                video_chunk_size,
+                next_video_chunk_sizes,
+                end_of_video,
+                video_chunk_remain
+            ) = net_env.get_video_chunk(bit_rate)
+
+
+
+
+            reward = QoE_1(bit_rate, last_bit_rate, rebuf)
+
+
+
+
+            r_batch.append(reward)
+
+            last_bit_rate = bit_rate
+
+            # retrieve previous state
+            state = np.array(s_batch[-1], copy=True)
+
+            # dequeue history record
+            state = np.roll(state, -1, axis=1)
+
+            # this should be args.S_INFO number of terms
+            state[0, -1] = VIDEO_BIT_RATE[bit_rate] / \
+                           float(np.max(VIDEO_BIT_RATE))  # last quality
+
+            state[1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
+            state[2, -1] = float(video_chunk_size) / \
+                           float(delay) / M_IN_K  # kilo byte / ms
+            state[3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
+            state[4, :A_DIM] = np.array(
+                next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
+            state[5, -1] = np.minimum(video_chunk_remain, TOTAL_VIDEO_CHUNK) / float(TOTAL_VIDEO_CHUNK)
+
+            # compute action probability vector
+            action_prob = actor.predict(np.reshape(
+                state, (1, s_info, s_len)))
+
+            action_cumsum = np.cumsum(action_prob)
+
+
+            bit_rate = (action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax()
+
+            # Note: we need to discretize the probability into 1/args.RAND_RANGE steps,
+            # because there is an intrinsic discrepancy in passing single state and batch states
+
+            entropy_record.append(A_NN.compute_entropy(action_prob[0]))
+
+            # report experience to the coordinator
+            if len(r_batch) >= train_seq_len or end_of_video:
+                epoch += 1
+                # ------------------------------回报R和优势td_batch以及广义优势估计GAE----------------------------------
+                # 更改格式，便于下面计算
+                s_batch_np = np.stack(s_batch, axis=0)
+                a_batch_np = np.vstack(a_batch)
+                r_batch_np = np.vstack(r_batch)
+
+
+                assert s_batch_np.shape[0] == a_batch_np.shape[0]
+                assert s_batch_np.shape[0] == r_batch_np.shape[0]
+                ba_size = s_batch_np.shape[0]
+                v_batch = critic.predict(s_batch_np)
+                R_batch = np.zeros(r_batch_np.shape)
+
+
+                if end_of_video:
+                    R_batch[-1, 0] = 0  # terminal state
+
+                else:
+                    R_batch[-1, 0] = v_batch[-1, 0]  # boot strap from last state
+                for t in reversed(range(ba_size - 1)):
+                    R_batch[t, 0] = r_batch_np[t] + GAMMA * R_batch[t + 1, 0]
+                Adv_batch = R_batch - v_batch
+                exp_queue.put([s_batch[1:],  # ignore the first chuck
+                               a_batch[1:],  # since we don't have the
+                               Adv_batch[1:],
+                               R_batch[1:],
+                               ])
+
+                if epoch % 2 == 0 and epoch != 0:
+                    # synchronize the network parameters from the coordinator
+                    actor_net_params, critic_net_params = net_params_queue.get()
+                    actor.set_network_params(actor_net_params)
+                    critic.set_network_params(critic_net_params)
+
+                del s_batch[:]
+                del a_batch[:]
+                del r_batch[:]
+                del entropy_record[:]
+
+                # so that in the log we know where video ends
+
+            # store the state and action into batches
+            if end_of_video:
+                last_bit_rate = DEFAULT_QUALITY
+                bit_rate = DEFAULT_QUALITY  # use the default action here
+                # action_vec = np.array( [VIDEO_BIT_RATE[last_bit_rate] ,VIDEO_BIT_RATE[bit_rate] ,selection] )
+                action_vec = np.zeros(a_dim)
+
+                action_vec[bit_rate] = 1
+                s_batch.append(np.zeros((s_info, s_len)))
+                a_batch.append(action_vec)
+
+
+                net_env.trace_scheduler.set_epoch(epoch)
+
+            else:
+                s_batch.append(state)
+                # print(bit_rate)
+                # action_vec = np.zeros(args.A_DIM)
+                # action_vec = np.array( [VIDEO_BIT_RATE[last_bit_rate] ,VIDEO_BIT_RATE[bit_rate] ,selection] )
+                action_vec = np.zeros(a_dim)
+
+                action_vec[bit_rate] = 1
+                # print(action_vec)
+                a_batch.append(action_vec)
+
 def main():
     args = parse_args()
     assert (
         not args.model_path
         or args.model_path.endswith(".ckpt")
-    )
+    )  # 断言模型路径为空或以 .ckpt 结尾
     os.makedirs(args.save_dir, exist_ok=True)
     print(args.save_dir)
     save_args(args, args.save_dir)
     set_seed(args.seed)
+
+    # training_traces, validation_traces,
+
 
     training_traces = []
     val_traces = []

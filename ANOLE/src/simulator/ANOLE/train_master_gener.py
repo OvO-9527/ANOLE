@@ -5,18 +5,18 @@ import warnings
 import shutil
 import numpy as np
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../simulator')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../src')))
 
 from sklearn.cluster import KMeans
-from simulator.save_cmd import set_seed, save_args
+from common.utils import set_seed, save_args
 import subprocess
-from simulator.ANOLE.master_gener import Pensieve
-from simulator.schedulers import (
+from simulator.master_QoE_4G.ALONE_git2.master_gener import Pensieve
+from simulator.master_QoE_4G.schedulers import (
     UDRTrainScheduler,
 )
-from simulator.utils import load_traces
-from simulator.abr_trace import AbrTrace
-from simulator.constants import (
+from simulator.master_QoE_4G.utils import load_traces
+from simulator.master_QoE_4G.abr_trace import AbrTrace
+from simulator.master_QoE_4G.constants import (
     A_DIM,
     MASTER_EPOCH,
     GER_EPOCH_2,
@@ -28,9 +28,9 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 
 # Saved directory for throughput clustering
-output_base_dir = "/home/ubuntu/Load_trace/Cluster_6/"
+output_base_dir = "/home/ubuntu/Whr/Load_trace/Cluster_6/"
 # Experience pool
-master_save_dir="/home/ubuntu/ANOLE/results/master/"
+master_save_dir="/home/ubuntu/Whr/EAS/ALONE/results_ALONE/4/master/"
 
 
 
@@ -39,9 +39,9 @@ def parse_args():
     parser = argparse.ArgumentParser("Training code.")
     parser.add_argument("--save-dir",type=str,required=True,help="direcotry to save the model.")
     parser.add_argument("--seed", type=int, default=30, help="seed")
-    parser.add_argument("--gener-2", type=int, default=0, help="General Training Phase 3")
+    parser.add_argument("--gener-2", type=int, default=0, help="General Training Phase 2")
     parser.add_argument("--entropy-weight", type=float, default=np.log(A_DIM), help="Entropy weight")
-    parser.add_argument("--master-train", type=int,default=0,help="Training Phase 2.")
+    parser.add_argument("--master-train", type=int,default=0,help="Total number of epoch to be trained.")
     parser.add_argument("--log", action="store_true", help="Use logarithmic form QoE metric")
     parser.add_argument( "--total-epoch",type=int,default=100,help="Total number of epoch to be trained.")
     parser.add_argument("--model-path",type=str,default="",help="Path to a pretrained Tensorflow checkpoint.")
@@ -96,7 +96,7 @@ def main():
     assert (
         not args.model_path
         or args.model_path.endswith(".ckpt")
-    )
+    )  # 断言模型路径为空或以 .ckpt 结尾
     os.makedirs(args.save_dir, exist_ok=True)
     print(args.save_dir)
     save_args(args, args.save_dir)
@@ -107,7 +107,7 @@ def main():
 
     # training_traces, validation_traces,
 
-
+    master_train_finish = 0
     training_traces = []
     val_traces = []
 
@@ -126,7 +126,6 @@ def main():
     )
     t_start_1 = time.time()
 
-    # # Stage One
     ger_model,entropy_weight = pensieve.train(
         args,
         train_scheduler,
@@ -142,128 +141,161 @@ def main():
         args.gener_2,
         )
 
-    # Stage two
+
+
     if  not args.master_train:
         data_list = []
-        cluster_num_1 = 1
-        cluster_num_2 = 2
-        # Number of clusters
-        zhonglei = 6
+        # cluster_num_1 = 1
+        # cluster_num_2 = 2
+        # # Number of clusters
+        # zhonglei = 6
+        #
+        # for filename in os.listdir(args.train_trace_dir):
+        #     try:
+        #         parts = filename.split("_")
+        #         if len(parts) == 3:
+        #             avg_value = float(parts[0])  # 平均值
+        #             cov = float(parts[1]) * 25  # CoV
+        #             index = int(parts[2])  # 序号
+        #
+        #             # 存入列表
+        #             data_list.append([filename, avg_value, cov, index])
+        #     except Exception as e:
+        #         print(f"跳过文件 {filename}，解析错误: {e}")
+        #
+        # categorys = np.array([[row[cluster_num_1],row[cluster_num_2]] for row in data_list])
+        #
+        # kmeans = KMeans(n_clusters=zhonglei, random_state=42, n_init=10)
+        # clusters = kmeans.fit_predict(categorys)
+        #
+        #
+        # for i in range(len(data_list)):
+        #     data_list[i].append(clusters[i])
+        #
+        # for row in data_list:
+        #     filename = row[0]  # 文件名
+        #     cluster_id = row[-1]  # 聚类编号
+        #
+        #     cluster_dir = os.path.join(output_base_dir, f"{cluster_id + 1}")
+        #     os.makedirs(cluster_dir, exist_ok=True)  # 确保目录存在
+        #
+        #     # 复制文件
+        #     src_path = os.path.join(args.train_trace_dir, filename)
+        #     dst_path = os.path.join(cluster_dir, filename)
+        #
+        #     try:
+        #         shutil.copy(src_path, dst_path)
+        #         # print(f"复制 {filename} 到 {cluster_dir}")
+        #     except Exception as e:
+        #         print(f"复制 {filename} 失败: {e}")
+        #
+        #
+        #
+        # #In order to speed up training, multiple specialist training courses are run in parallel.
+        # processes = []
+        #
+        # for kk in range(zhonglei):
+        #     ma_save_dir = master_save_dir + str(kk+1)
+        #     master_train_trace_dir = output_base_dir + str(kk+1)
+        #     cmd = "python /home/ubuntu/Whr/EAS/ALONE/src/simulator/master_QoE_4G/ALONE/train_master_QoE.py " \
+        #           "--total-epoch={total_epoch} " \
+        #           "--seed={seed} " \
+        #           "--save-dir={save_dir} " \
+        #           "--model-path={model_path} " \
+        #           "--val-freq={val_freq} " \
+        #           "--qoe-number={qoe_number} " \
+        #           "--entropy-weight={entropy_weight} " \
+        #           "--master-train={master_train} " \
+        #           "--nagent={nagent} ".format(
+        #         total_epoch=MASTER_EPOCH,
+        #         seed=30,
+        #         save_dir=ma_save_dir,
+        #         model_path=ger_model,
+        #         val_freq=700,
+        #         qoe_number= 1,
+        #         entropy_weight=entropy_weight,
+        #         master_train=1,
+        #         nagent=5)
+        #
+        #     if args.log:
+        #         cmd += "--log "
+        #
+        #     cmd += "--val-trace-dir={val_dir} " \
+        #            "--train-trace-dir={train_trace_dir}".format(
+        #         val_dir=master_train_trace_dir,
+        #         train_trace_dir=master_train_trace_dir)
+        #     print(cmd)
+        #     processes.append(subprocess.Popen(cmd.split(' ')))
+        #     #subprocess.run(cmd.split(' '))
+        #
+        # for process in processes:
+        #     process.wait()
+        #
+        # #Access a pool of specialist experience
+        # for i in range(zhonglei):
+        #
+        #     model_result_dir = master_save_dir + str(i+1)
+        #     dest_QoE_dir = args.master_trace_path
+        #     master_train_trace_dir = output_base_dir + str(i + 1)
+        #
+        #     model_file_path =  get_max_model(model_result_dir)
+        #     print(model_file_path)
+        #     pensieve.master_trace_test(model_file_path,master_train_trace_dir,dest_QoE_dir,args.video_size_file_dir,1)
 
-        # Clustering the training data set
-        for filename in os.listdir(args.train_trace_dir):
-            try:
-                parts = filename.split("_")
-                if len(parts) == 3:
-                    avg_value = float(parts[0])  # 平均值
-                    cov = float(parts[1]) * 25  # CoV
-                    index = int(parts[2])  # 序号
-
-                    # 存入列表
-                    data_list.append([filename, avg_value, cov, index])
-            except Exception as e:
-                print(f"跳过文件 {filename}，解析错误: {e}")
-
-        categorys = np.array([[row[cluster_num_1],row[cluster_num_2]] for row in data_list])
-
-        kmeans = KMeans(n_clusters=zhonglei, random_state=42, n_init=10)
-        clusters = kmeans.fit_predict(categorys)
-
-
-        for i in range(len(data_list)):
-            data_list[i].append(clusters[i])
-
-        for row in data_list:
-            filename = row[0]
-            cluster_id = row[-1]
-
-            cluster_dir = os.path.join(output_base_dir, f"{cluster_id + 1}")
-            os.makedirs(cluster_dir, exist_ok=True)  # 确保目录存在
-            # 复制文件
-            src_path = os.path.join(args.train_trace_dir, filename)
-            dst_path = os.path.join(cluster_dir, filename)
-
-            try:
-                shutil.copy(src_path, dst_path)
-            except Exception as e:
-                print(f"复制 {filename} 失败: {e}")
-
-        # Stage Two
-        #In order to speed up training, multiple specialist training courses are run in parallel.
-        processes = []
-        for kk in range(zhonglei):
-            ma_save_dir = master_save_dir + str(kk+1)
-            master_train_trace_dir = output_base_dir + str(kk+1)
-            cmd = "python simulator/ANOLE/train_master_QoE.py " \
-                  "--total-epoch={total_epoch} " \
-                  "--seed={seed} " \
-                  "--save-dir={save_dir} " \
-                  "--model-path={model_path} " \
-                  "--val-freq={val_freq} " \
-                  "--qoe-number={qoe_number} " \
-                  "--entropy-weight={entropy_weight} " \
-                  "--master-train={master_train} " \
-                  "--nagent={nagent} ".format(
-                total_epoch=MASTER_EPOCH,
-                seed=30,
-                save_dir=ma_save_dir,
-                model_path=ger_model,
-                val_freq=700,
-                qoe_number= 1,
-                entropy_weight=entropy_weight,
-                master_train=1,
-                nagent=5)
-
-            if args.log:
-                cmd += "--log "
-
-            cmd += "--val-trace-dir={val_dir} " \
-                   "--train-trace-dir={train_trace_dir}".format(
-                val_dir=master_train_trace_dir,
-                train_trace_dir=master_train_trace_dir)
-            print(cmd)
-            processes.append(subprocess.Popen(cmd.split(' ')))
-            #subprocess.run(cmd.split(' '))
-
-        for process in processes:
-            process.wait()
-
-       #Access a pool of specialist experience
-        for i in range(zhonglei):
-            model_result_dir = master_save_dir + str(i+1)
-            dest_QoE_dir = args.master_trace_path
-            master_train_trace_dir = output_base_dir + str(i + 1)
-            model_file_path =  get_max_model(model_result_dir)
-            print(model_file_path)
-            pensieve.master_trace_test(model_file_path,master_train_trace_dir,dest_QoE_dir,args.video_size_file_dir,1)
-
-
+        master_train_finish = 1
 
     # Stage Three
-    if not args.master_train :
+    if master_train_finish :
         time_start = time.time()
+        # args.model_path = ger_model
+        # # Initialize model and agent policy
+        # args.save_dir = args.save_dir + '_' +str(2)
+        # args.total_epoch = GER_EPOCH_2
+        # args.entropy_weight = entropy_weight
+        # args.master_train = 1
+        # args.gener_2 = 1
+        # ger_model, entropy_weight = pensieve.train(
+        #     args,
+        #     train_scheduler,
+        #     val_traces,
+        #     args.save_dir,
+        #     args.nagent,
+        #     args.total_epoch,
+        #     args.video_size_file_dir,
+        #     args.log,
+        #     args.val_freq,
+        #     args.master_train,
+        #     args.entropy_weight,
+        #     args.gener_2,
+        # )
+
+
+
         save_dir_2 = args.save_dir + '_' +str(2)
-        cmd = "python simulator/ANOLE/train_master_gener.py " \
+        cmd = "python /home/ubuntu/Whr/EAS/ALONE/src/simulator/master_QoE_4G/ALONE_git2/train_master_gener.py " \
               "--total-epoch={total_epoch} " \
               "--seed={seed} " \
-              "--gener-2={gener_2} " \
               "--save-dir={save_dir} " \
               "--model-path={model_path} " \
               "--val-freq={val_freq} " \
               "--entropy-weight={entropy_weight} " \
               "--master-train={master_train} " \
-              "--nagent={nagent} ".format(
+              "--nagent={nagent} " \
+              "--gener-2={gener_2} ".format(
             total_epoch=GER_EPOCH_2,
             seed=30,
-            gener_2=1,
             save_dir=save_dir_2,
             model_path=ger_model,
             val_freq=700,
             entropy_weight=entropy_weight,
             master_train=1,
-            nagent=20)
+            nagent=20,
+            gener_2=1)
+
+
         if args.log:
             cmd += "--log "
+
         cmd += "--val-trace-dir={val_dir} " \
                "--train-trace-dir={train_trace_dir} " \
                "--master-trace-path={master_trace_path}".format(
@@ -273,7 +305,7 @@ def main():
         print(cmd)
         subprocess.run(cmd.split(' '))
 
-
+        print('阶段三时间：',time.time()-time_start)
 
 if __name__ == "__main__":
     main()

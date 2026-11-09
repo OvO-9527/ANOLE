@@ -2,7 +2,7 @@ from typing import List
 
 import numpy as np
 
-from simulator.abr_trace import AbrTrace
+from simulator.master_QoE_4G.abr_trace import AbrTrace
 
 
 class Scheduler:

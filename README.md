@@ -1,5 +1,5 @@
 # ANOLE
-## To prevent the theft of academic achievements in this paper, the currently released code only includes the main framework, with specific implementation details omitted (e.g., neural networks, specific parameter settings, etc.). The complete code will be made public after the review process concludes.
+
 ### The environment setup
 Anaconda is suggested to be installed to manage the test environments.
 
